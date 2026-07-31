@@ -21,5 +21,10 @@ wandb/
 # tools
 llama.cpp/
 
+# secrets — never commit credentials
+*.env
+.env
+.env.*
+
 # os
 .DS_Store
