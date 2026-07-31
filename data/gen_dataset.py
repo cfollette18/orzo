@@ -219,6 +219,7 @@ def main() -> None:
     ap.add_argument("--task", choices=TASK_PROMPTS, required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--workers", type=int, default=8)
     args = ap.parse_args()
 
     from openai import OpenAI  # lazy: validators/prompts must import without the client
@@ -239,31 +240,38 @@ def main() -> None:
         specs = specs[: args.limit]
 
     validate = VALIDATORS[args.task]
-    written = skipped = failed = 0
-    with open(args.out, "a") as out:
-        for spec in specs:
-            if spec["id"] in done:
-                skipped += 1
-                continue
-            prompt = TASK_PROMPTS[args.task].format(
-                spec=spec["spec"], persona=spec["persona"],
-                tools=", ".join(spec["tools"]), constraints=spec["constraints"],
+
+    def generate(spec):
+        prompt = TASK_PROMPTS[args.task].format(
+            spec=spec["spec"], persona=spec["persona"],
+            tools=", ".join(spec["tools"]), constraints=spec["constraints"],
+        )
+        for _ in range(2):  # one retry on validation failure
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+                max_tokens=8192,
+                # deepseek-v4 is a reasoning model; keep the whole budget
+                # for content or reasoning can starve it to empty output
+                extra_body={"thinking": {"type": "disabled"}},
             )
-            target = None
-            for _ in range(2):  # one retry on validation failure
-                resp = client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.7,
-                    max_tokens=8192,
-                    # deepseek-v4 is a reasoning model; keep the whole budget
-                    # for content or reasoning can starve it to empty output
-                    extra_body={"thinking": {"type": "disabled"}},
-                )
-                text = resp.choices[0].message.content
-                if validate(text, spec):
-                    target = strip_fences(text)
-                    break
+            text = resp.choices[0].message.content
+            if validate(text, spec):
+                return spec, prompt, strip_fences(text)
+        return spec, prompt, None
+
+    todo = [s for s in specs if s["id"] not in done]
+    skipped = len(specs) - len(todo)
+    written = failed = 0
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    with open(args.out, "a") as out, \
+            ThreadPoolExecutor(max_workers=args.workers) as pool:
+        futures = [pool.submit(generate, s) for s in todo]
+        for fut in as_completed(futures):
+            spec, prompt, target = fut.result()
             if target is None:
                 failed += 1
                 continue
