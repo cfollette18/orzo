@@ -25,8 +25,8 @@ echo "== venv"
 uv venv ~/orzo-venv
 VENV_PY=~/orzo-venv/bin/python
 
-echo "== torch (JetPack 6 / CUDA 12.6 aarch64 wheel)"
-uv pip install --python "$VENV_PY" torch --index-url https://download.pytorch.org/whl/cu126
+echo "== torch (JetPack 6 / CUDA 12.6 driver — pin the cu126 aarch64 build)"
+uv pip install --python "$VENV_PY" "torch==2.13.0+cu126" --index-url https://download.pytorch.org/whl/cu126
 "$VENV_PY" -c "import torch; print('torch', torch.__version__, 'cuda:', torch.cuda.is_available())" || {
     echo "torch CUDA check failed — see train/requirements-jetson.txt for fallbacks"; exit 1; }
 
