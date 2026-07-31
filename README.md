@@ -40,15 +40,21 @@ natural-language agent specs
 - `export/` — LoRA merge → GGUF → Ollama
 - `scripts/` — Jetson setup (power mode, swap, deps)
 
-## The three dataset tasks
+## The curriculum: anatomy of an agent harness
 
-| Task | Input | Target output |
-|------|-------|---------------|
-| `tool_schema` | agent spec | JSON tool schemas (name, params, returns) |
-| `react_trace` | spec + user goal | thought/action/observation trace with correct tool calls |
-| `harness_scaffold` | agent spec | complete runnable Python harness (loop, dispatch, retries) |
+The dataset teaches each harness component in isolation, then the full
+assembly — scales before the concerto. `data/README.md` defines every
+category and its validation rules.
 
-See `data/README.md` for the full spec.
+| Task | Share | What it teaches |
+|------|-------|-----------------|
+| `harness_scaffold` | ~40% | the **full harness**: rules, tools, hooks, guardrails, sqlite-backed memory, loop control |
+| `react_trace` | ~20% | tool-calling traces, incl. guardrail denials and retries |
+| `tool_schema` | ~15% | tool design, incl. `db_read` / `db_write` |
+| `rules` | ~10% | the behavioral contract (role, must/must-not, constraints) |
+| `guardrails` | ~5% | allow/deny lists, approval gates, output validation |
+| `hooks` | ~5% | lifecycle interception (`pre_tool_call`, `post_tool_call`, `on_error`) |
+| `skills` | ~5% | packaged multi-step capabilities (`SKILL` + `run()`) |
 
 ## Roadmap
 

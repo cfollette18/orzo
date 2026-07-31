@@ -75,14 +75,14 @@ GOALS = {
 }
 
 TOOL_POOLS = {
-    "devops": ["http_request", "shell", "git", "read_file", "write_file", "send_slack", "search"],
-    "research": ["web_search", "read_pdf", "read_file", "write_file", "sql_query", "send_email"],
-    "data": ["sql_query", "read_file", "write_file", "shell", "http_request", "send_email"],
-    "home": ["http_request", "read_file", "calendar", "send_notification", "smart_home_api"],
-    "support": ["ticket_api", "search", "send_email", "crm_lookup", "send_slack", "http_request"],
-    "personal": ["send_email", "calendar", "http_request", "read_file", "write_file", "search"],
-    "security": ["shell", "read_file", "http_request", "sql_query", "send_slack", "write_file"],
-    "finance": ["sql_query", "read_file", "send_email", "http_request", "write_file"],
+    "devops": ["http_request", "shell", "git", "read_file", "write_file", "send_slack", "db_read", "db_write"],
+    "research": ["web_search", "read_pdf", "read_file", "write_file", "db_read", "db_write", "send_email"],
+    "data": ["db_read", "db_write", "read_file", "write_file", "shell", "http_request", "send_email"],
+    "home": ["http_request", "db_read", "db_write", "calendar", "send_notification", "smart_home_api"],
+    "support": ["ticket_api", "db_read", "db_write", "send_email", "crm_lookup", "send_slack", "http_request"],
+    "personal": ["send_email", "calendar", "http_request", "db_read", "db_write", "search"],
+    "security": ["shell", "db_read", "db_write", "http_request", "sql_query", "send_slack", "write_file"],
+    "finance": ["db_read", "db_write", "sql_query", "read_file", "send_email", "http_request", "write_file"],
 }
 
 CONSTRAINTS = [
@@ -123,8 +123,10 @@ def main() -> None:
         combos = []
         for goal in GOALS[domain]:
             pool = TOOL_POOLS[domain]
-            for k in (3, 4, 5):
-                for tools in itertools.combinations(sorted(pool), k):
+            rest = tuple(t for t in sorted(pool) if t not in ("db_read", "db_write"))
+            for k in (3, 4, 5):  # k = total tools; db_read/db_write always included
+                for extra in itertools.combinations(rest, k - 2):
+                    tools = ("db_read", "db_write") + extra
                     for constraint in CONSTRAINTS:
                         for persona in PERSONAS:
                             combos.append((goal, tools, constraint, persona))

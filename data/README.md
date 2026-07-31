@@ -1,41 +1,55 @@
 # The orzo dataset
 
 Spec for `orzo-harness-sft`: a synthetic SFT dataset that teaches a small code
-model to produce **agent harnesses** — tool schemas, function-calling traces,
-and full Python scaffolds.
+model to produce **complete agent harnesses** — every component, and the full
+assembly. The curriculum mirrors the anatomy of a real harness, so the model
+learns the parts *and* how they fit together.
 
 Everything is ChatML (`{"messages": [...]}`) JSONL. One example per line.
 
-## Task types
+## Anatomy of an agent harness (what each category does)
 
-### 1. `tool_schema`
+| Component | What it is | Why it exists |
+|-----------|-----------|---------------|
+| **Rules** | The behavioral contract in the system prompt: role, must/must-not rules, output format, when to stop | Without explicit rules a model improvises; rules make behavior reproducible |
+| **Tools** | Typed functions the agent may call — schemas + implementations. Includes `db_read` / `db_write`, file I/O, shell, HTTP | The *only* way the agent touches the world; schemas keep calls valid |
+| **Tool calls & dispatch** | The protocol: model emits a JSON call → harness validates args → executes → appends the observation | Separates deciding from doing; every action is parseable, checkable, logged |
+| **Hooks** | Lifecycle interception points: `pre_tool_call`, `post_tool_call`, `on_error`, `on_finish` | Logging, metrics, blocking dangerous calls, retries — without touching the loop |
+| **Skills** | Packaged multi-step capabilities (bigger than a single tool): a `SKILL` descriptor + `run()` the agent can invoke | Reusable procedures the model doesn't have to re-derive every run |
+| **Guardrails** | Input/output validation, tool allow/deny lists, human-approval gates, step & budget caps | Keeps the agent inside its mandate; failures become denials, not damage |
+| **Memory & persistence** | Run state, audit log, checkpoints — backed by a real database (`sqlite3`), read *and* written | Agents that can't record what they did can't resume, be audited, or learn |
+| **Loop control** | `max_steps`, bounded retries with backoff, explicit termination on `finish` | The difference between an agent and an infinite bill |
 
-- **user**: natural-language agent spec (1–3 sentences)
-- **assistant**: a JSON array of tool schemas. Each tool:
-  `{"name", "description", "parameters": {<json-schema>}, "returns": <description>}`
-- **Validation**: output parses as JSON; every entry has `name`, `description`,
-  `parameters`; names are `snake_case`; 2–8 tools.
+## Dataset tasks
 
-### 2. `react_trace`
+The flagship task is the full harness. Component tasks exist so the model
+learns each part in isolation — like scales before the concerto.
 
-- **user**: agent spec + a concrete user goal + the tool schemas
-- **assistant**: a JSON array of steps, each
-  `{"thought": str, "action": {"tool": str, "args": {...}}, "observation": <mock result>}`
-  ending with `{"thought": str, "action": {"tool": "finish", "args": {"answer": str}}}`
-- **Validation**: parses as JSON; every `tool` exists in the provided schemas;
-  args match the schema's required params; trace ends with `finish`; ≤ 12 steps.
+| Task | Share | Input | Target output |
+|------|-------|-------|---------------|
+| `harness_scaffold` | ~40% | spec + constraints | **complete runnable Python harness** wiring rules, tools, hooks, guardrails, sqlite memory, and loop control together |
+| `react_trace` | ~20% | spec + goal + tools | JSON thought/action/observation trace, incl. a guardrail denial or a retry when the scenario calls for it |
+| `tool_schema` | ~15% | spec | JSON array of tool schemas incl. `db_read`/`db_write` where the spec involves persistence |
+| `rules` | ~10% | spec + persona | markdown rules doc with `## Role`, `## Rules`, `## Constraints` |
+| `guardrails` | ~5% | spec + tools | Python module: `validate_tool_call`, allow/deny lists, approval gate |
+| `hooks` | ~5% | spec + tools | Python module: `pre_tool_call`, `post_tool_call`, `on_error` |
+| `skills` | ~5% | spec | Python module: `SKILL` descriptor (name, description, when_to_use) + `run(ctx, **kwargs)` |
 
-### 3. `harness_scaffold`
+## Validation (what the generator enforces)
 
-- **user**: agent spec + constraints (retry policy, max steps, approval gates)
-- **assistant**: a single complete Python file. Required shape:
-  - `TOOLS` dict mapping name → callable
-  - `dispatch(name, args)` with try/except + bounded retries
-  - a main loop that calls the model, parses tool calls, dispatches, appends
-    observations, and terminates on `finish` or `max_steps`
-  - stdlib only (plus an OpenAI-compatible client) so generated harnesses run anywhere
-- **Validation**: `ast.parse` succeeds; contains `dispatch`, a loop, and `max_steps`;
-  no imports outside the allowlist.
+- `tool_schema` — parses as JSON; 3–8 tools; each has `name` (snake_case),
+  `description`, `parameters`
+- `react_trace` — parses as JSON; ≤ 12 steps; every `tool` exists in the given
+  schemas; ends with a `finish` action
+- `rules` — contains `## Role`, `## Rules`, `## Constraints` headers
+- `hooks` — `ast.parse` passes; defines `pre_tool_call`, `post_tool_call`,
+  `on_error`
+- `skills` — `ast.parse` passes; defines `SKILL` and `run`
+- `guardrails` — `ast.parse` passes; defines `validate_tool_call`, has a deny
+  list, has an approval gate
+- `harness_scaffold` — `ast.parse` passes; contains `TOOLS`, `dispatch`,
+  `pre_tool_call`, `validate_tool_call`, `sqlite3`, a loop, and `max_steps`;
+  imports restricted to an allowlist (stdlib + `openai`)
 
 ## Splits
 
@@ -47,18 +61,20 @@ Everything is ChatML (`{"messages": [...]}`) JSONL. One example per line.
 ## System prompt (shared across tasks)
 
 ```
-You are orzo, a generator of agent harnesses. Given a spec, you produce
-tool schemas, function-calling traces, or complete harness code. Output
-exactly what is asked: JSON when JSON is asked, code when code is asked.
-No prose.
+You are orzo, a generator of agent harnesses. Given a spec, you produce the
+parts of an agent harness — rules, tool schemas, hooks, guardrails, skills,
+function-calling traces — or a complete harness that assembles them. Output
+exactly what is asked: JSON when JSON is asked, code when code is asked,
+markdown when markdown is asked. No prose.
 ```
 
 ## Generation flow
 
 1. `gen_specs.py` — combinatorial spec sampler (domain × tools × constraints ×
-   persona). Deterministic with a seed; deduped.
+   persona). Deterministic with a seed; deduped. Every spec's tool pool
+   includes `db_read` / `db_write` so persistence shows up everywhere.
 2. `gen_dataset.py` — sends specs to a teacher model (any OpenAI-compatible
-   API), validates the output against the rules above, retries once, appends
-   to JSONL. Resumable: existing IDs are skipped.
+   API), validates output against the rules above, retries once, appends to
+   JSONL. Resumable: existing IDs are skipped.
 3. Manual spot-check of a sample (yes, actually reading them).
 4. Upload to HF Hub with a dataset card.

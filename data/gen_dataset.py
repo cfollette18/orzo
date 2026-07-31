@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Build the orzo SFT dataset with a teacher model.
 
-Reads specs from gen_specs.py, asks the teacher for one of the three task
-outputs (tool_schema / react_trace / harness_scaffold), validates the result,
-and appends ChatML examples to JSONL. Resumable: IDs already in the output
-file are skipped.
+Reads specs from gen_specs.py, asks the teacher for one of the component or
+assembly tasks (see data/README.md), validates the result, and appends ChatML
+examples to JSONL. Resumable: IDs already in the output file are skipped.
 
 Teacher is any OpenAI-compatible API:
     export ORZO_TEACHER_BASE_URL=https://api.openai.com/v1
@@ -19,19 +18,18 @@ import os
 import re
 import sys
 
-from openai import OpenAI
-
 SYSTEM_PROMPT = (
     "You are orzo, a generator of agent harnesses. Given a spec, you produce "
-    "tool schemas, function-calling traces, or complete harness code. Output "
-    "exactly what is asked: JSON when JSON is asked, code when code is asked. "
-    "No prose."
+    "the parts of an agent harness — rules, tool schemas, hooks, guardrails, "
+    "skills, function-calling traces — or a complete harness that assembles "
+    "them. Output exactly what is asked: JSON when JSON is asked, code when "
+    "code is asked, markdown when markdown is asked. No prose."
 )
 
 ALLOWED_IMPORTS = {
     "json", "os", "re", "sys", "time", "math", "random", "pathlib",
     "dataclasses", "typing", "collections", "datetime", "urllib",
-    "openai", "logging", "argparse", "subprocess", "hashlib",
+    "openai", "logging", "argparse", "subprocess", "hashlib", "sqlite3",
 }
 
 TASK_PROMPTS = {
@@ -40,6 +38,7 @@ TASK_PROMPTS = {
         "Design the tool set for this agent using these capabilities: {tools}.\n"
         "Output a JSON array of tool schemas. Each tool needs: name (snake_case), "
         "description, parameters (JSON Schema object), returns (short description). "
+        "If the agent persists anything, include db_read and db_write tools. "
         "Output JSON only."
     ),
     "react_trace": (
@@ -47,25 +46,82 @@ TASK_PROMPTS = {
         "Constraint: {constraints}\n\n"
         "Write a realistic example run as a JSON array of steps. Each step: "
         '{{"thought": str, "action": {{"tool": str, "args": {{...}}}}, '
-        '"observation": <plausible mock result>}}. End with a finish action '
-        'carrying the final answer. At most 12 steps. Output JSON only.'
+        '"observation": <plausible mock result>}}. If a step would violate the '
+        "constraint, show the guardrail denial as the observation and the agent "
+        "adjusting. End with a finish action carrying the final answer. "
+        "At most 12 steps. Output JSON only."
+    ),
+    "rules": (
+        "Agent spec: {spec}\nPersona: {persona}\nConstraint: {constraints}\n\n"
+        "Write the rules document for this agent — the behavioral contract that "
+        "goes in its system prompt. Markdown with exactly these sections: "
+        "## Role (what the agent is), ## Rules (numbered must/must-not rules), "
+        "## Constraints (limits, termination conditions, when to ask a human). "
+        "Markdown only."
+    ),
+    "hooks": (
+        "Agent spec: {spec}\nTools available: {tools}\n\n"
+        "Write a Python module of lifecycle hooks for this agent's harness: "
+        "pre_tool_call(name, args) (may raise to block a call), "
+        "post_tool_call(name, args, result) (logging/auditing), and "
+        "on_error(name, args, error) (decide retry vs. abort). Stdlib only. "
+        "Output code only, no markdown fences."
+    ),
+    "skills": (
+        "Agent spec: {spec}\nTools available: {tools}\n\n"
+        "Write a Python module defining one reusable skill for this agent: a "
+        "SKILL dict with name, description, and when_to_use, plus a "
+        "run(ctx, **kwargs) function that performs the multi-step procedure "
+        "using the tools on ctx. Stdlib only. Output code only, no markdown fences."
+    ),
+    "guardrails": (
+        "Agent spec: {spec}\nTools available: {tools}\nConstraint: {constraints}\n\n"
+        "Write a Python module of guardrails for this agent's harness: "
+        "validate_tool_call(name, args) that enforces allow/deny lists and "
+        "raises on violations, an APPROVAL_REQUIRED set of tools that need a "
+        "human yes before running, and validate_output(text) for the final "
+        "answer. Stdlib only. Output code only, no markdown fences."
     ),
     "harness_scaffold": (
         "Agent spec: {spec}\nPersona: {persona}\nTools available: {tools}\n"
         "Constraints: {constraints}\n\n"
         "Write one complete, runnable Python file implementing this agent's "
-        "harness. Requirements: a TOOLS dict of stub implementations, a "
-        "dispatch(name, args) with bounded retries, a main loop that queries an "
-        "OpenAI-compatible model, parses tool calls as JSON, dispatches them, "
-        "appends observations, and stops on finish or max_steps. Stdlib plus "
-        "the openai package only. Output code only, no markdown fences."
+        "full harness: RULES (the system-prompt contract), a TOOLS dict of "
+        "stub implementations, dispatch(name, args), lifecycle hooks "
+        "(pre_tool_call, post_tool_call, on_error), guardrails "
+        "(validate_tool_call with allow/deny and approval gates), run state "
+        "and an audit log persisted with sqlite3 (db_read/db_write helpers), "
+        "and a main loop that queries an OpenAI-compatible model, parses tool "
+        "calls as JSON, validates and dispatches them through the hooks and "
+        "guardrails, appends observations, and stops on finish or max_steps. "
+        "Stdlib plus the openai package only. Output code only, no markdown fences."
     ),
 }
 
 
 def strip_fences(text: str) -> str:
-    m = re.search(r"```(?:json|python)?\s*\n(.*?)```", text, re.DOTALL)
+    m = re.search(r"```(?:json|python|markdown)?\s*\n(.*?)```", text, re.DOTALL)
     return m.group(1).strip() if m else text.strip()
+
+
+def _parse_python(text: str) -> ast.Module | None:
+    try:
+        return ast.parse(strip_fences(text))
+    except SyntaxError:
+        return None
+
+
+def _check_imports(tree: ast.Module) -> bool:
+    imports = {
+        node.names[0].name.split(".")[0]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+    } | {
+        node.module.split(".")[0]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+    }
+    return imports <= ALLOWED_IMPORTS
 
 
 def valid_tool_schema(text: str) -> bool:
@@ -73,7 +129,7 @@ def valid_tool_schema(text: str) -> bool:
         tools = json.loads(strip_fences(text))
     except json.JSONDecodeError:
         return False
-    if not isinstance(tools, list) or not 2 <= len(tools) <= 8:
+    if not isinstance(tools, list) or not 3 <= len(tools) <= 8:
         return False
     for t in tools:
         if not all(k in t for k in ("name", "description", "parameters")):
@@ -98,30 +154,59 @@ def valid_react_trace(text: str, tool_names: list[str]) -> bool:
     return steps[-1]["action"].get("tool") == "finish"
 
 
-def valid_harness(text: str) -> bool:
+def valid_rules(text: str) -> bool:
+    doc = strip_fences(text)
+    return all(h in doc for h in ("## Role", "## Rules", "## Constraints"))
+
+
+def valid_hooks(text: str) -> bool:
+    tree = _parse_python(text)
+    if tree is None or not _check_imports(tree):
+        return False
     code = strip_fences(text)
-    try:
-        tree = ast.parse(code)
-    except SyntaxError:
+    return all(n in code for n in ("pre_tool_call", "post_tool_call", "on_error"))
+
+
+def valid_skills(text: str) -> bool:
+    tree = _parse_python(text)
+    if tree is None or not _check_imports(tree):
         return False
-    imports = {
-        node.names[0].name.split(".")[0]
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Import)
-    } | {
-        node.module.split(".")[0]
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom) and node.module
-    }
-    if not imports <= ALLOWED_IMPORTS:
+    code = strip_fences(text)
+    return "SKILL" in code and "def run(" in code
+
+
+def valid_guardrails(text: str) -> bool:
+    tree = _parse_python(text)
+    if tree is None or not _check_imports(tree):
         return False
+    code = strip_fences(text)
+    return (
+        "validate_tool_call" in code
+        and "APPROVAL_REQUIRED" in code
+        and ("DENY" in code or "deny" in code)
+    )
+
+
+def valid_harness(text: str) -> bool:
+    tree = _parse_python(text)
+    if tree is None or not _check_imports(tree):
+        return False
+    code = strip_fences(text)
     has_loop = any(isinstance(n, (ast.While, ast.For)) for n in ast.walk(tree))
-    return has_loop and "dispatch" in code and "max_steps" in code
+    required = (
+        "RULES", "TOOLS", "dispatch", "pre_tool_call", "post_tool_call",
+        "validate_tool_call", "sqlite3", "max_steps",
+    )
+    return has_loop and all(r in code for r in required)
 
 
 VALIDATORS = {
     "tool_schema": lambda text, spec: valid_tool_schema(text),
     "react_trace": lambda text, spec: valid_react_trace(text, spec["tools"]),
+    "rules": lambda text, spec: valid_rules(text),
+    "hooks": lambda text, spec: valid_hooks(text),
+    "skills": lambda text, spec: valid_skills(text),
+    "guardrails": lambda text, spec: valid_guardrails(text),
     "harness_scaffold": lambda text, spec: valid_harness(text),
 }
 
@@ -133,6 +218,8 @@ def main() -> None:
     ap.add_argument("--out", required=True)
     ap.add_argument("--limit", type=int, default=0)
     args = ap.parse_args()
+
+    from openai import OpenAI  # lazy: validators/prompts must import without the client
 
     client = OpenAI(
         base_url=os.environ["ORZO_TEACHER_BASE_URL"],
