@@ -23,7 +23,7 @@ Everything is ChatML (`{"messages": [...]}`) JSONL. One example per line.
 ## Dataset tasks
 
 The flagship task is the full harness. Component tasks exist so the model
-learns each part in isolation — like scales before the concerto.
+learns each part in isolation before learning the full assembly.
 
 | Task | Share | Input | Target output |
 |------|-------|-------|---------------|

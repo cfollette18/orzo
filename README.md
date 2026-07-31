@@ -1,6 +1,6 @@
 # orzo
 
-**Small pasta, small model.** An agent-harness generator fine-tuned entirely on a $249 NVIDIA Jetson Orin Nano (8 GB).
+An agent-harness generator fine-tuned entirely on an NVIDIA Jetson Orin Nano (8 GB).
 
 Give `orzo` a natural-language spec — *"an agent that watches a GitHub repo and opens an issue when CI goes red"* — and it generates a **working agent harness**: tool schemas, the tool-use loop, dispatch, retries, and the system prompt. Not a chatbot. A machine that builds the scaffolding agents run on.
 
@@ -43,7 +43,7 @@ natural-language agent specs
 ## The curriculum: anatomy of an agent harness
 
 The dataset teaches each harness component in isolation, then the full
-assembly — scales before the concerto. `data/README.md` defines every
+assembly. `data/README.md` defines every
 category and its validation rules.
 
 | Task | Share | What it teaches |
