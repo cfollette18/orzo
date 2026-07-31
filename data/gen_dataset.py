@@ -30,6 +30,8 @@ ALLOWED_IMPORTS = {
     "json", "os", "re", "sys", "time", "math", "random", "pathlib",
     "dataclasses", "typing", "collections", "datetime", "urllib",
     "openai", "logging", "argparse", "subprocess", "hashlib", "sqlite3",
+    "io", "csv", "functools", "itertools", "enum", "uuid", "string",
+    "textwrap", "traceback", "contextlib", "copy", "shutil", "tempfile",
 }
 
 TASK_PROMPTS = {
@@ -253,6 +255,10 @@ def main() -> None:
                     model=model,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.7,
+                    max_tokens=8192,
+                    # deepseek-v4 is a reasoning model; keep the whole budget
+                    # for content or reasoning can starve it to empty output
+                    extra_body={"thinking": {"type": "disabled"}},
                 )
                 text = resp.choices[0].message.content
                 if validate(text, spec):
