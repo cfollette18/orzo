@@ -41,6 +41,9 @@ TASK_PROMPTS = {
         "Output a JSON array of tool schemas. Each tool needs: name (snake_case), "
         "description, parameters (JSON Schema object), returns (short description). "
         "If the agent persists anything, include db_read and db_write tools. "
+        "If memory_store and memory_search are among the capabilities, design them "
+        "as embedding-backed vector memory: memory_store(text, metadata) and "
+        "memory_search(query, k) returning the k most similar past items. "
         "Output JSON only."
     ),
     "react_trace": (
@@ -48,7 +51,11 @@ TASK_PROMPTS = {
         "Constraint: {constraints}\n\n"
         "Write a realistic example run as a JSON array of steps. Each step: "
         '{{"thought": str, "action": {{"tool": str, "args": {{...}}}}, '
-        '"observation": <plausible mock result>}}. If a step would violate the '
+        '"observation": <plausible mock result>}}. Include at least one step '
+        "where a tool call fails and the agent diagnoses the error and fixes "
+        "the call (wrong args, bad path, transient error), and one step where "
+        "the agent records a reusable learning (db_write to a learnings table, "
+        "or memory_store if available). If a step would violate the "
         "constraint, show the guardrail denial as the observation and the agent "
         "adjusting. End with a finish action carrying the final answer. "
         "At most 12 steps. Output JSON only."
@@ -57,7 +64,9 @@ TASK_PROMPTS = {
         "Agent spec: {spec}\nPersona: {persona}\nConstraint: {constraints}\n\n"
         "Write the rules document for this agent — the behavioral contract that "
         "goes in its system prompt. Markdown with exactly these sections: "
-        "## Role (what the agent is), ## Rules (numbered must/must-not rules), "
+        "## Role (what the agent is), ## Rules (numbered must/must-not rules, "
+        "including one rule about recording learnings and one about diagnosing "
+        "and fixing failed actions before retrying), "
         "## Constraints (limits, termination conditions, when to ask a human). "
         "Markdown only."
     ),
@@ -96,6 +105,15 @@ TASK_PROMPTS = {
         "and a main loop that queries an OpenAI-compatible model, parses tool "
         "calls as JSON, validates and dispatches them through the hooks and "
         "guardrails, appends observations, and stops on finish or max_steps. "
+        "on_error must diagnose the failure and return a fixed call when one "
+        "is plausible (corrected args, backoff, alternative tool) rather than "
+        "blindly retrying. After each run and each failure, append what "
+        "worked or failed to a learnings table, and read past learnings when "
+        "planning. If memory_store/memory_search are among the tools, "
+        "implement them as vector memory: embed text via the "
+        "OpenAI-compatible embeddings endpoint, store embeddings in sqlite, "
+        "and answer memory_search(query, k) with cosine-similarity top-k; "
+        "recall relevant memories at the start of each run. "
         "Stdlib plus the openai package only. Output code only, no markdown fences."
     ),
 }
@@ -189,7 +207,7 @@ def valid_guardrails(text: str) -> bool:
     )
 
 
-def valid_harness(text: str) -> bool:
+def valid_harness(text: str, spec: dict) -> bool:
     tree = _parse_python(text)
     if tree is None or not _check_imports(tree):
         return False
@@ -197,9 +215,17 @@ def valid_harness(text: str) -> bool:
     has_loop = any(isinstance(n, (ast.While, ast.For)) for n in ast.walk(tree))
     required = (
         "RULES", "TOOLS", "dispatch", "pre_tool_call", "post_tool_call",
-        "validate_tool_call", "sqlite3", "max_steps",
+        "validate_tool_call", "sqlite3", "max_steps", "learnings",
     )
-    return has_loop and all(r in code for r in required)
+    if not (has_loop and all(r in code for r in required)):
+        return False
+    # vector memory is mandatory when the spec carries memory tools
+    if "memory_search" in spec["tools"]:
+        return all(
+            r in code
+            for r in ("memory_store", "memory_search", "cosine", "embedding")
+        )
+    return True
 
 
 VALIDATORS = {
@@ -209,7 +235,7 @@ VALIDATORS = {
     "hooks": lambda text, spec: valid_hooks(text),
     "skills": lambda text, spec: valid_skills(text),
     "guardrails": lambda text, spec: valid_guardrails(text),
-    "harness_scaffold": lambda text, spec: valid_harness(text),
+    "harness_scaffold": lambda text, spec: valid_harness(text, spec),
 }
 
 

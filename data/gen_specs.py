@@ -138,11 +138,15 @@ def main() -> None:
             if sid in seen:
                 continue
             seen.add(sid)
+            tool_list = list(tools)
+            # deterministic: ~60% of specs also get embedding-backed memory
+            if int(sid, 16) % 5 < 3:
+                tool_list += ["memory_store", "memory_search"]
             specs.append({
                 "id": sid,
                 "domain": domain,
                 "spec": template.format(goal=goal),
-                "tools": list(tools),
+                "tools": tool_list,
                 "constraints": constraint,
                 "persona": persona,
             })

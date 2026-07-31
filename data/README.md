@@ -17,7 +17,8 @@ Everything is ChatML (`{"messages": [...]}`) JSONL. One example per line.
 | **Hooks** | Lifecycle interception points: `pre_tool_call`, `post_tool_call`, `on_error`, `on_finish` | Logging, metrics, blocking dangerous calls, retries — without touching the loop |
 | **Skills** | Packaged multi-step capabilities (bigger than a single tool): a `SKILL` descriptor + `run()` the agent can invoke | Reusable procedures the model doesn't have to re-derive every run |
 | **Guardrails** | Input/output validation, tool allow/deny lists, human-approval gates, step & budget caps | Keeps the agent inside its mandate; failures become denials, not damage |
-| **Memory & persistence** | Run state, audit log, checkpoints — backed by a real database (`sqlite3`), read *and* written | Agents that can't record what they did can't resume, be audited, or learn |
+| **Memory & persistence** | Run state, audit log, checkpoints — backed by a real database (`sqlite3`), read *and* written. Specs carrying `memory_store`/`memory_search` get **vector memory**: embeddings stored in sqlite, queried by cosine-similarity top-k | Agents that can't record what they did can't resume, be audited, or recall |
+| **Learnings & fixes** | After runs and failures the agent appends what worked/failed to a `learnings` table and reads it when planning; `on_error` diagnoses the failure and returns a *fixed* call instead of blindly retrying | Self-correction is the difference between a demo and a dependable agent |
 | **Loop control** | `max_steps`, bounded retries with backoff, explicit termination on `finish` | The difference between an agent and an infinite bill |
 
 ## Dataset tasks
@@ -47,8 +48,10 @@ learns each part in isolation before learning the full assembly.
 - `skills` — `ast.parse` passes; defines `SKILL` and `run`
 - `guardrails` — `ast.parse` passes; defines `validate_tool_call`, has a deny
   list, has an approval gate
-- `harness_scaffold` — `ast.parse` passes; contains `TOOLS`, `dispatch`,
-  `pre_tool_call`, `validate_tool_call`, `sqlite3`, a loop, and `max_steps`;
+- `harness_scaffold` — `ast.parse` passes; contains `RULES`, `TOOLS`,
+  `dispatch`, `pre_tool_call`, `post_tool_call`, `validate_tool_call`,
+  `sqlite3`, `learnings`, a loop, and `max_steps`; when the spec carries
+  memory tools, also `memory_store`, `memory_search`, `cosine`, `embedding`;
   imports restricted to an allowlist (stdlib + `openai`)
 
 ## Splits
@@ -72,7 +75,8 @@ markdown when markdown is asked. No prose.
 
 1. `gen_specs.py` — combinatorial spec sampler (domain × tools × constraints ×
    persona). Deterministic with a seed; deduped. Every spec's tool pool
-   includes `db_read` / `db_write` so persistence shows up everywhere.
+   includes `db_read` / `db_write`; ~60% (deterministic by spec id) also
+   carry `memory_store` / `memory_search` for vector memory.
 2. `gen_dataset.py` — sends specs to a teacher model (any OpenAI-compatible
    API), validates output against the rules above, retries once, appends to
    JSONL. Resumable: existing IDs are skipped.
