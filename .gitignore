@@ -1,0 +1,25 @@
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# data artifacts (the dataset is published to HF Hub, not committed)
+data/generated/
+*.jsonl
+!data/examples/*.jsonl
+
+# training artifacts
+checkpoints/
+runs/
+wandb/
+*.gguf
+*.bin
+*.safetensors
+
+# tools
+llama.cpp/
+
+# os
+.DS_Store
