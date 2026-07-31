@@ -1,37 +1,40 @@
 #!/usr/bin/env bash
-# One-time setup of heater (Jetson Orin Nano) as the orzo training box.
-# Needs sudo for the swap file. Usage: bash scripts/setup_jetson.sh
+# Set up heater (Jetson Orin Nano) as the orzo training box — no sudo required.
+# Run scripts/setup_swap.sh with sudo FIRST (see that script), then:
+#     bash scripts/setup_jetson.sh
 set -euo pipefail
 
-echo "== power mode (want MAXN_SUPER)"
-nvpmodel -q | tail -3
-
-echo "== 8 GB swapfile (QLoRA on 8 GB unified memory needs headroom)"
-if [ ! -f /swapfile ]; then
-    sudo fallocate -l 8G /swapfile
-    sudo chmod 600 /swapfile
-    sudo mkswap /swapfile
-    sudo swapon /swapfile
-    grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+echo "== swap check (want >= 6 GB total: zram + /swapfile)"
+TOTAL_SWAP_MB=$(awk '/SwapTotal/ {print int($2/1024)}' /proc/meminfo)
+echo "total swap: ${TOTAL_SWAP_MB} MB"
+if [ "$TOTAL_SWAP_MB" -lt 6144 ]; then
+    echo "WARNING: low swap. Ask the machine owner to run: sudo bash scripts/setup_swap.sh"
 fi
-free -h
 
-echo "== python venv"
-sudo apt-get update
-sudo apt-get install -y python3-venv cmake build-essential git
-python3 -m venv --system-site-packages ~/orzo-venv
-source ~/orzo-venv/bin/activate
+echo "== power mode (want MAXN_SUPER)"
+nvpmodel -q | tail -3 || true
+
+echo "== uv (aarch64, user-local)"
+if ! command -v uv >/dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.local/bin:$PATH"
+fi
+uv --version
+
+echo "== venv"
+uv venv ~/orzo-venv
+VENV_PY=~/orzo-venv/bin/python
 
 echo "== torch (JetPack 6 / CUDA 12.6 aarch64 wheel)"
-pip install --upgrade pip
-pip install torch --index-url https://download.pytorch.org/whl/cu126
-python -c "import torch; print('torch', torch.__version__, 'cuda:', torch.cuda.is_available())"
+uv pip install --python "$VENV_PY" torch --index-url https://download.pytorch.org/whl/cu126
+"$VENV_PY" -c "import torch; print('torch', torch.__version__, 'cuda:', torch.cuda.is_available())" || {
+    echo "torch CUDA check failed — see train/requirements-jetson.txt for fallbacks"; exit 1; }
 
 echo "== training deps"
-pip install -r train/requirements-jetson.txt
+uv pip install --python "$VENV_PY" -r train/requirements-jetson.txt
 
 echo "== sanity"
-python - <<'PY'
+"$VENV_PY" - <<'PY'
 import torch, transformers, peft, trl
 print("transformers", transformers.__version__)
 print("peft", peft.__version__, "| trl", trl.__version__)
