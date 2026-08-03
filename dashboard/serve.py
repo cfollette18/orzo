@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 """Live pipeline dashboard for orzo — enterprise-style UI, stdlib only.
 
-Tabs: Overview · Dataset · Examples · Training · System
-Charts and the example browser are rendered client-side from /api/*; the
-server is dependency-free Python, so it runs identically on the laptop and
-on heater (the Jetson).
+Tabs:
+  Pipeline  — step-by-step guide with live stage status
+  Dataset   — per-task generation progress
+  Examples  — browse actual dataset points
+  Training  — loss curve and run metrics
+  System    — tegrastats, disk, hardware
+
+The server is dependency-free Python and runs identically on the laptop
+and on the Jetson (heater) over LAN or Tailscale.
 
 Usage:
     python dashboard/serve.py --root . --port 8000
     # local:  http://localhost:8000
-    # jetson: http://heater:8000  (over LAN or Tailscale)
+    # jetson: http://heater:8000
 """
 
 import argparse
@@ -17,6 +22,7 @@ import glob
 import json
 import os
 import subprocess
+import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -25,6 +31,53 @@ TASK_TARGETS = {
     "harness_scaffold": 1200, "react_trace": 600, "tool_schema": 450,
     "rules": 300, "guardrails": 150, "hooks": 150, "skills": 150,
 }
+
+PIPELINE = [
+    {
+        "id": "specs",
+        "title": "Generate dataset",
+        "desc": "Produce synthetic agent-harness examples from specs, validate every output, and freeze a held-out test set.",
+        "cmds": [
+            "python data/gen_specs.py --out data/generated/specs.jsonl",
+            "python data/gen_dataset.py --task harness_scaffold --out data/generated/harness_scaffold.jsonl --limit 1200 --workers 8",
+            "# ... repeat for react_trace, tool_schema, rules, hooks, skills, guardrails",
+        ],
+    },
+    {
+        "id": "train",
+        "title": "Train custom model on Jetson",
+        "desc": "QLoRA fine-tune Qwen2.5-Coder-1.5B on the 8 GB Jetson Orin Nano with tegrastats logging.",
+        "cmds": [
+            "bash scripts/setup_jetson.sh",
+            "bash scripts/tegrastats_log.sh runs/orzo.tegrastats.log &",
+            "python train/train_qlora.py --data data/train.jsonl --valid data/valid.jsonl --output checkpoints/orzo-qwen25-coder-1.5b --wandb",
+        ],
+    },
+    {
+        "id": "export",
+        "title": "Export to GGUF + Ollama",
+        "desc": "Merge LoRA adapters, convert to Q4_K_M GGUF, and register the model with Ollama on heater.",
+        "cmds": [
+            "bash export/export_gguf.sh checkpoints/orzo-qwen25-coder-1.5b Qwen/Qwen2.5-Coder-1.5B-Instruct",
+            "ollama run orzo",
+        ],
+    },
+    {
+        "id": "eval",
+        "title": "Run functional evals",
+        "desc": "Score base vs fine-tuned on the frozen test set: does each output compile, run, and dispatch tools correctly?",
+        "cmds": [
+            "python eval/run_eval.py --model orzo --specs data/examples/test_specs.jsonl --task harness_scaffold --smoke --out eval/orzo.jsonl",
+            "python eval/run_eval.py --model Qwen/Qwen2.5-Coder-1.5B-Instruct --specs data/examples/test_specs.jsonl --task harness_scaffold --smoke --out eval/base.jsonl",
+        ],
+    },
+    {
+        "id": "publish",
+        "title": "Publish artifacts",
+        "desc": "Push the repo, upload the dataset and GGUF to Hugging Face Hub, and add the results table + demo to the README.",
+        "cmds": ["git push", "huggingface-cli upload ...", "ollama push orzo"],
+    },
+]
 
 
 def dataset_progress(root):
@@ -38,6 +91,53 @@ def dataset_progress(root):
                 n = sum(1 for _ in f)
         tasks.append({"task": task, "n": n, "target": target})
     return tasks
+
+
+def training_metrics(root):
+    states = glob.glob(os.path.join(root, "**", "trainer_state.json"),
+                       recursive=True)
+    if not states:
+        return None
+    newest = max(states, key=os.path.getmtime)
+    state = json.load(open(newest))
+    losses = [{"step": h.get("step", 0), "loss": h["loss"]}
+              for h in state.get("log_history", []) if "loss" in h]
+    return {
+        "run": os.path.relpath(os.path.dirname(newest), root),
+        "losses": losses, "step": state.get("global_step"),
+        "max_steps": state.get("max_steps"), "epoch": state.get("epoch"),
+        "mtime": os.path.getmtime(newest),
+    }
+
+
+def pipeline_state(root):
+    tasks = dataset_progress(root)
+    total_n = sum(t["n"] for t in tasks)
+    total_t = sum(t["target"] for t in tasks)
+    tm = training_metrics(root)
+    now = time.time()
+
+    def exists(rel):
+        return os.path.exists(os.path.join(root, rel))
+
+    specs_done = exists("data/examples/test_specs.jsonl") and total_n >= 1
+    train_done = exists("checkpoints/orzo-qwen25-coder-1.5b/adapter_model.safetensors") or \
+                 (tm and tm.get("step") and tm.get("max_steps") and tm["step"] >= tm["max_steps"])
+    train_active = tm and (now - tm["mtime"] < 120) and not train_done
+    export_done = exists("checkpoints/orzo-qwen25-coder-1.5b-gguf/orzo-Q4_K_M.gguf")
+    eval_done = exists("eval/orzo.jsonl") and exists("eval/base.jsonl")
+
+    return {
+        "specs": {"status": "done" if specs_done else "running" if total_n > 0 else "pending",
+                  "progress": total_n / max(total_t, 1),
+                  "detail": f"{total_n} / {total_t} examples"},
+        "train": {"status": "done" if train_done else "running" if train_active else "pending",
+                  "progress": (tm["step"] / tm["max_steps"]) if tm and tm.get("max_steps") else 0,
+                  "detail": f"step {tm.get('step') or 0}/{tm.get('max_steps') or '?'}" if tm else "not started"},
+        "export": {"status": "done" if export_done else "pending", "detail": "Q4_K_M.gguf present" if export_done else "waiting on training"},
+        "eval": {"status": "done" if eval_done else "pending", "detail": "results present" if eval_done else "waiting on export"},
+        "publish": {"status": "done" if False else "pending", "detail": "manual step"},
+    }
 
 
 def read_example(root, task, index):
@@ -63,23 +163,6 @@ def read_example(root, task, index):
         "task": task, "index": index, "total": len(lines),
         "spec_id": ex.get("spec_id"),
         "user": msgs[1]["content"], "assistant": assistant, "kind": kind,
-    }
-
-
-def training_metrics(root):
-    states = glob.glob(os.path.join(root, "**", "trainer_state.json"),
-                       recursive=True)
-    if not states:
-        return None
-    newest = max(states, key=os.path.getmtime)
-    state = json.load(open(newest))
-    losses = [{"step": h.get("step", 0), "loss": h["loss"]}
-              for h in state.get("log_history", []) if "loss" in h]
-    return {
-        "run": os.path.relpath(os.path.dirname(newest), root),
-        "losses": losses, "step": state.get("global_step"),
-        "max_steps": state.get("max_steps"), "epoch": state.get("epoch"),
-        "mtime": os.path.getmtime(newest),
     }
 
 
@@ -113,6 +196,7 @@ def status(root):
                     "total_n": sum(t["n"] for t in tasks),
                     "total_t": sum(t["target"] for t in tasks)},
         "training": training_metrics(root),
+        "pipeline": pipeline_state(root),
         "tegrastats": tegrastats_tail(root),
         "disk": disk_usage(),
     }
@@ -126,7 +210,7 @@ PAGE = r"""<!doctype html>
 * { box-sizing:border-box; }
 body { margin:0; background:var(--bg); color:var(--text);
        font-family:-apple-system,'Segoe UI',Roboto,sans-serif; display:flex; }
-nav { width:190px; min-height:100vh; background:var(--panel);
+nav { width:200px; min-height:100vh; background:var(--panel);
       border-right:1px solid var(--border); padding:18px 0; flex-shrink:0; }
 nav h1 { font-size:19px; padding:0 18px 14px; margin:0;
          border-bottom:1px solid var(--border); }
@@ -135,9 +219,9 @@ nav a { display:block; padding:10px 18px; color:var(--dim); cursor:pointer;
         text-decoration:none; font-size:14px; }
 nav a.active { color:var(--text); background:#1f6feb22;
                border-left:3px solid var(--accent); }
-main { flex:1; padding:22px 28px; max-width:1100px; }
+main { flex:1; padding:22px 28px; max-width:1150px; }
 .tab { display:none; } .tab.active { display:block; }
-.cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
+.cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr));
          gap:14px; margin-bottom:18px; }
 .card { background:var(--panel); border:1px solid var(--border);
         border-radius:8px; padding:14px 16px; }
@@ -166,18 +250,38 @@ canvas { background:#0a0d12; border:1px solid var(--border);
          border-radius:8px; width:100%; }
 .pill { display:inline-block; padding:2px 10px; border-radius:20px;
         font-size:11px; background:#1f6feb33; color:var(--accent); }
+
+/* pipeline stepper */
+.step { display:flex; gap:14px; margin-bottom:18px; }
+.step .dot { width:34px; height:34px; border-radius:50%; flex-shrink:0;
+             display:flex; align-items:center; justify-content:center;
+             font-size:15px; background:#21262d; border:2px solid var(--border); }
+.step.done .dot { background:var(--green); border-color:var(--green); color:#000; }
+.step.running .dot { background:var(--accent); border-color:var(--accent); color:#000;
+                     animation:pulse 1.4s infinite; }
+.step .body { flex:1; background:var(--panel); border:1px solid var(--border);
+              border-radius:8px; padding:14px 16px; }
+.step.running .body { border-color:var(--accent); }
+.step .title { font-weight:600; margin-bottom:4px; }
+.step .desc { color:var(--dim); font-size:13px; margin-bottom:8px; }
+.step .meta { font-size:12px; color:var(--dim); margin-bottom:8px; }
+.step .barbg { margin:8px 0; }
+.step .cmds { background:#0a0d12; border:1px solid var(--border); border-radius:6px;
+              padding:10px 14px; font-size:12px; margin-top:8px; }
+.step .cmds summary { cursor:pointer; color:var(--dim); }
+.step .cmds pre { margin:8px 0 0; padding:10px; max-height:160px; }
+@keyframes pulse { 0%,100%{box-shadow:0 0 0 0 #58a6ff55} 50%{box-shadow:0 0 0 6px #58a6ff00} }
 </style></head><body>
 <nav><h1>orzo<span>·</span>pipeline</h1>
-<a data-tab="overview" class="active">Overview</a>
+<a data-tab="pipeline" class="active">Pipeline</a>
 <a data-tab="dataset">Dataset</a>
 <a data-tab="examples">Examples</a>
 <a data-tab="training">Training</a>
 <a data-tab="system">System</a></nav>
 <main>
-<div id="overview" class="tab active">
-  <div class="cards" id="kpis"></div>
-  <h2>Pipeline stages</h2>
-  <div class="card"><table id="ovTasks"></table></div>
+<div id="pipeline" class="tab active">
+  <h2>End-to-end procedure</h2>
+  <div id="steps"></div>
 </div>
 <div id="dataset" class="tab">
   <div class="cards" id="dsKpis"></div>
@@ -206,6 +310,7 @@ canvas { background:#0a0d12; border:1px solid var(--border);
 <script>
 let exIdx = 0, lastSample = null, ratePerMin = 0;
 const $ = id => document.getElementById(id);
+const steps = ${steps_json};
 
 document.querySelectorAll('nav a').forEach(a => a.onclick = () => {
   document.querySelectorAll('nav a').forEach(x => x.classList.remove('active'));
@@ -229,18 +334,15 @@ function kpi(label, value, cls='') {
 function lineChart(cv, pts) {
   const ctx = cv.getContext('2d'), W = cv.width = cv.clientWidth * 2, H = cv.height = 440;
   ctx.clearRect(0, 0, W, H);
-  if (!pts || pts.length < 2) {
-    ctx.fillStyle = '#8b949e'; ctx.font = '28px sans-serif';
-    ctx.fillText('no training data yet', 30, 60); return;
-  }
+  if (!pts || pts.length < 2) { ctx.fillStyle = '#8b949e'; ctx.font = '28px sans-serif'; ctx.fillText('no training data yet', 30, 60); return; }
   const xs = pts.map(p => p.step), ys = pts.map(p => p.loss);
   const x0 = Math.min(...xs), x1 = Math.max(...xs) || 1;
   const y0 = Math.min(...ys), y1 = Math.max(...ys), span = (y1 - y0) || 1e-9;
   const X = s => 40 + (s - x0) / ((x1 - x0) || 1) * (W - 70);
   const Y = l => H - 40 - (l - y0) / span * (H - 80);
   ctx.strokeStyle = '#30363d'; ctx.beginPath();
-  for (let i = 0; i <= 4; i++) { const y = 40 + i * (H - 80) / 4;
-    ctx.moveTo(40, y); ctx.lineTo(W - 30, y); } ctx.stroke();
+  for (let i = 0; i <= 4; i++) { const y = 40 + i * (H - 80) / 4; ctx.moveTo(40, y); ctx.lineTo(W - 30, y); }
+  ctx.stroke();
   ctx.strokeStyle = '#58a6ff'; ctx.lineWidth = 3; ctx.beginPath();
   pts.forEach((p, i) => i ? ctx.lineTo(X(p.step), Y(p.loss)) : ctx.moveTo(X(p.step), Y(p.loss)));
   ctx.stroke();
@@ -248,27 +350,41 @@ function lineChart(cv, pts) {
   ctx.fillText(`loss ${ys[ys.length-1].toFixed(4)}  (min ${y0.toFixed(4)})`, 44, 30);
 }
 
+function renderPipeline(ps) {
+  const icons = {pending:'○', running:'●', done:'✓'};
+  $('steps').innerHTML = steps.map(s => {
+    const st = ps[s.id] || {status:'pending', detail:'', progress:0};
+    const cls = st.status;
+    const bar = `<div class="barbg"><div class="bar ${st.status==='done'?'done':''}" style="width:${(st.progress||0)*100}%"></div></div>`;
+    const cmds = `<details class="cmds"><summary>How to run this step</summary><pre>${s.cmds.join('\n')}</pre></details>`;
+    return `<div class="step ${cls}">
+      <div class="dot">${icons[st.status]}</div>
+      <div class="body">
+        <div class="title">${s.title}</div>
+        <div class="desc">${s.desc}</div>
+        <div class="meta">status: <b class="${st.status==='done'?'ok':st.status==='running'?'warn':''}">${st.status}</b> — ${st.detail}</div>
+        ${st.progress > 0 || st.status==='running' ? bar : ''}
+        ${cmds}
+      </div>
+    </div>`;
+  }).join('');
+}
+
 async function poll() {
   const s = await (await fetch('/api/status')).json();
   const d = s.dataset;
-  if (lastSample) ratePerMin = (d.total_n - lastSample.n) /
-      ((Date.now() - lastSample.t) / 60000) || ratePerMin;
+  if (lastSample) ratePerMin = (d.total_n - lastSample.n) / ((Date.now() - lastSample.t) / 60000) || ratePerMin;
   lastSample = { n: d.total_n, t: Date.now() };
   const pct = (d.total_n / d.total_t * 100).toFixed(1);
   const eta = ratePerMin > 0 ? Math.round((d.total_t - d.total_n) / ratePerMin) : null;
 
-  $('kpis').innerHTML =
-    kpi('Dataset', `${d.total_n.toLocaleString()} <span class="muted">/ ${d.total_t.toLocaleString()}</span>`) +
-    kpi('Complete', pct + '%') +
-    kpi('Rate', ratePerMin ? ratePerMin.toFixed(1) + '/min' : '—') +
-    kpi('ETA', eta ? `~${eta} min` : '—') +
-    kpi('Disk free', s.disk.avail || '—');
-  $('ovTasks').innerHTML = taskRows(d.tasks);
+  renderPipeline(s.pipeline);
 
   $('dsKpis').innerHTML =
     kpi('Examples generated', d.total_n.toLocaleString()) +
-    kpi('Tasks done', d.tasks.filter(t => t.n >= t.target).length + ' / ' + d.tasks.length) +
-    kpi('Rate', ratePerMin ? ratePerMin.toFixed(1) + '/min' : '—');
+    kpi('Complete', pct + '%') +
+    kpi('Rate', ratePerMin ? ratePerMin.toFixed(1) + '/min' : '—') +
+    kpi('ETA', eta ? `~${eta} min` : '—');
   $('dsTasks').innerHTML = taskRows(d.tasks);
 
   const t = s.training;
@@ -281,7 +397,7 @@ async function poll() {
   lineChart($('lossChart'), t ? t.losses : null);
 
   $('sysKpis').innerHTML =
-    kpi('Disk', `${s.disk.avail || '—'} free`) +
+    kpi('Disk free', s.disk.avail || '—') +
     kpi('Used', s.disk.pct || '—') +
     kpi('Updated', s.now.split('T')[1]);
   $('tegra').textContent = s.tegrastats;
@@ -302,8 +418,7 @@ function exNav(d) {
 }
 
 window.onload = () => {
-  $('exTask').innerHTML = Object.keys(${task_targets}).map(t =>
-    `<option>${t}</option>`).join('');
+  $('exTask').innerHTML = Object.keys(${task_targets}).map(t => `<option>${t}</option>`).join('');
   $('exTask').onchange = () => { exIdx = 0; loadExample(); };
   poll(); loadExample();
   setInterval(poll, 5000);
@@ -325,7 +440,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         url = urlparse(self.path)
         if url.path == "/":
-            body = PAGE.replace("${task_targets}", json.dumps(TASK_TARGETS)).encode()
+            body = PAGE.replace("${task_targets}", json.dumps(TASK_TARGETS)) \
+                       .replace("${steps_json}", json.dumps(PIPELINE)).encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
