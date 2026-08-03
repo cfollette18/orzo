@@ -39,25 +39,25 @@ learns each part in isolation before learning the full assembly.
 ## Validation (what the generator enforces)
 
 - `tool_schema` — parses as JSON; 3–8 tools; each has `name` (snake_case),
-  `description`, `parameters`
+ `description`, `parameters`
 - `react_trace` — parses as JSON; ≤ 12 steps; every `tool` exists in the given
-  schemas; ends with a `finish` action
+ schemas; ends with a `finish` action
 - `rules` — contains `## Role`, `## Rules`, `## Constraints` headers
 - `hooks` — `ast.parse` passes; defines `pre_tool_call`, `post_tool_call`,
-  `on_error`
+ `on_error`
 - `skills` — `ast.parse` passes; defines `SKILL` and `run`
 - `guardrails` — `ast.parse` passes; defines `validate_tool_call`, has a deny
-  list, has an approval gate
+ list, has an approval gate
 - `harness_scaffold` — `ast.parse` passes; contains `RULES`, `TOOLS`,
-  `dispatch`, `pre_tool_call`, `post_tool_call`, `validate_tool_call`,
-  `sqlite3`, `learnings`, a loop, and `max_steps`; when the spec carries
-  memory tools, also `memory_store`, `memory_search`, `cosine`, `embedding`;
-  imports restricted to an allowlist (stdlib + `openai`)
+ `dispatch`, `pre_tool_call`, `post_tool_call`, `validate_tool_call`,
+ `sqlite3`, `learnings`, a loop, and `max_steps`; when the spec carries
+ memory tools, also `memory_store`, `memory_search`, `cosine`, `embedding`;
+ imports restricted to an allowlist (stdlib + `openai`)
 
 ## Splits
 
 - `test.jsonl` — **50 specs, frozen before any training.** Never touched by
-  training or prompt iteration. Eval-only.
+ training or prompt iteration. Eval-only.
 - `valid.jsonl` — ~5% for loss curves.
 - `train.jsonl` — the rest.
 
@@ -74,11 +74,11 @@ markdown when markdown is asked. No prose.
 ## Generation flow
 
 1. `gen_specs.py` — combinatorial spec sampler (domain × tools × constraints ×
-   persona). Deterministic with a seed; deduped. Every spec's tool pool
-   includes `db_read` / `db_write`; ~60% (deterministic by spec id) also
-   carry `memory_store` / `memory_search` for vector memory.
+ persona). Deterministic with a seed; deduped. Every spec's tool pool
+ includes `db_read` / `db_write`; ~60% (deterministic by spec id) also
+ carry `memory_store` / `memory_search` for vector memory.
 2. `gen_dataset.py` — sends specs to a teacher model (any OpenAI-compatible
-   API), validates output against the rules above, retries once, appends to
-   JSONL. Resumable: existing IDs are skipped.
+ API), validates output against the rules above, retries once, appends to
+ JSONL. Resumable: existing IDs are skipped.
 3. Manual spot-check of a sample (yes, actually reading them).
 4. Upload to HF Hub with a dataset card.
