@@ -162,8 +162,35 @@ def read_example(root, task, index):
     return {
         "task": task, "index": index, "total": len(lines),
         "spec_id": ex.get("spec_id"),
+        "raw": json.dumps(ex, indent=2),
         "user": msgs[1]["content"], "assistant": assistant, "kind": kind,
     }
+
+
+def tail_examples(root, n=5):
+    gen = os.path.join(root, "data", "generated")
+    candidates = []
+    for task in TASK_TARGETS:
+        path = os.path.join(gen, f"{task}.jsonl")
+        if os.path.exists(path):
+            with open(path) as f:
+                lines = f.readlines()
+            if len(lines) < TASK_TARGETS[task]:
+                candidates.append((os.path.getmtime(path), task, lines))
+    if not candidates:
+        # if all done, just tail the most recently modified file
+        for task in TASK_TARGETS:
+            path = os.path.join(gen, f"{task}.jsonl")
+            if os.path.exists(path):
+                with open(path) as f:
+                    lines = f.readlines()
+                candidates.append((os.path.getmtime(path), task, lines))
+    if not candidates:
+        return []
+    candidates.sort(reverse=True)
+    _, task, lines = candidates[0]
+    return [{"task": task, "spec_id": json.loads(l).get("spec_id"), "raw": l.rstrip()}
+            for l in lines[-n:]]
 
 
 def tegrastats_tail(root):
@@ -288,6 +315,10 @@ canvas { background:#0a0d12; border:1px solid var(--border);
   <div class="card"><table id="dsTasks"></table></div>
 </div>
 <div id="examples" class="tab">
+  <div class="cards" id="feedKpis"></div>
+  <h2>Live feed (newest examples from the active task)</h2>
+  <pre id="liveFeed"><em>waiting for generation...</em></pre>
+  <h2>Browse examples</h2>
   <p>
     <select id="exTask"></select>
     <button onclick="exNav(-1)">◀ prev</button>
@@ -295,8 +326,9 @@ canvas { background:#0a0d12; border:1px solid var(--border);
     <button onclick="exNav(0)">random</button>
     <span class="muted" id="exMeta"></span>
   </p>
-  <h2>User (prompt)</h2><pre id="exUser"></pre>
-  <h2>Assistant (target)</h2><pre id="exAssistant"></pre>
+  <h3>Raw dataset record</h3><pre id="exRaw"></pre>
+  <h3>User (prompt)</h3><pre id="exUser"></pre>
+  <h3>Assistant (target)</h3><pre id="exAssistant"></pre>
 </div>
 <div id="training" class="tab">
   <div class="cards" id="trKpis"></div>
@@ -408,9 +440,19 @@ async function loadExample() {
   const e = await (await fetch(`/api/example?task=${task}&i=${exIdx}`)).json();
   exIdx = e.index;
   $('exMeta').innerHTML = ` <span class="pill">${e.spec_id}</span> ${e.index+1} / ${e.total}`;
+  $('exRaw').textContent = e.raw;
   $('exUser').textContent = e.user;
   $('exAssistant').textContent = e.assistant;
 }
+
+async function updateFeed() {
+  const rows = await (await fetch('/api/tail?n=8')).json();
+  $('feedKpis').innerHTML = rows.length ?
+    `<div class="card"><div class="lbl">Active task</div><div class="kpi">${rows[0].task}</div></div>` +
+    `<div class="card"><div class="lbl">Latest spec id</div><div class="kpi" style="font-size:14px">${rows[rows.length-1].spec_id}</div></div>` : '';
+  $('liveFeed').textContent = rows.map(r => `[${r.task}] ${r.spec_id}: ${r.raw}`).join('\n');
+}
+
 function exNav(d) {
   if (d === 0) exIdx = Math.floor(Math.random() * 1e6);
   else exIdx = Math.max(0, exIdx + d);
@@ -420,8 +462,9 @@ function exNav(d) {
 window.onload = () => {
   $('exTask').innerHTML = Object.keys(${task_targets}).map(t => `<option>${t}</option>`).join('');
   $('exTask').onchange = () => { exIdx = 0; loadExample(); };
-  poll(); loadExample();
+  poll(); loadExample(); updateFeed();
   setInterval(poll, 5000);
+  setInterval(updateFeed, 5000);
 };
 </script></body></html>"""
 
@@ -456,6 +499,10 @@ class Handler(BaseHTTPRequestHandler):
             ex = read_example(self.root, task, index)
             self._json(ex or {"error": "no examples yet"},
                        200 if ex else 404)
+        elif url.path == "/api/tail":
+            q = parse_qs(url.query)
+            n = int(q.get("n", ["5"])[0])
+            self._json(tail_examples(self.root, n))
         else:
             self._json({"error": "not found"}, 404)
 
