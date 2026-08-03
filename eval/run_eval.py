@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Functional evals for orzo — does the generated harness actually work?
 
-Prompts a served model (Ollama's OpenAI-compatible endpoint on heater) with
+Prompts a served model (Ollama's OpenAI-compatible endpoint on the edge device) with
 the frozen test specs and scores the outputs. The base model and the
 fine-tune get the exact same specs so the comparison is fair.
 
@@ -14,7 +14,7 @@ Metrics per task:
                      (5 s timeout, no network)
 
 Usage:
-    python eval/run_eval.py --endpoint http://heater:11434/v1 \
+    python eval/run_eval.py --endpoint http://the edge device:11434/v1 \
         --model orzo --specs data/generated/test.jsonl --task harness_scaffold
 """
 
@@ -57,7 +57,7 @@ def smoke_run(code: str, timeout: int = 5) -> bool:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--endpoint", default="http://heater:11434/v1")
+    ap.add_argument("--endpoint", default="http://the edge device:11434/v1")
     ap.add_argument("--model", required=True, help="served model name, e.g. orzo or a HF id")
     ap.add_argument("--specs", required=True)
     ap.add_argument("--task", choices=TASK_PROMPTS, required=True)

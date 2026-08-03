@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Set up heater (Jetson Orin Nano) as the orzo training box — no sudo required.
+# Set up the edge device (edge device) as the orzo training box — no sudo required.
 # Run scripts/setup_swap.sh with sudo FIRST (see that script), then:
-#     bash scripts/setup_jetson.sh
+#     bash scripts/setup_edge.sh
 set -euo pipefail
 
 echo "== swap check (want >= 6 GB total: zram + /swapfile)"
@@ -28,10 +28,10 @@ VENV_PY=~/orzo-venv/bin/python
 echo "== torch (JetPack 6 / CUDA 12.6 driver — pin the cu126 aarch64 build)"
 uv pip install --python "$VENV_PY" "torch==2.13.0+cu126" --index-url https://download.pytorch.org/whl/cu126
 "$VENV_PY" -c "import torch; print('torch', torch.__version__, 'cuda:', torch.cuda.is_available())" || {
-    echo "torch CUDA check failed — see train/requirements-jetson.txt for fallbacks"; exit 1; }
+    echo "torch CUDA check failed — see train/requirements-edge.txt for fallbacks"; exit 1; }
 
 echo "== training deps"
-uv pip install --python "$VENV_PY" -r train/requirements-jetson.txt
+uv pip install --python "$VENV_PY" -r train/requirements-edge.txt
 
 echo "== sanity"
 "$VENV_PY" - <<'PY'

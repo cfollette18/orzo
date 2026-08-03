@@ -9,12 +9,12 @@ Tabs:
   System    — tegrastats, disk, hardware
 
 The server is dependency-free Python and runs identically on the laptop
-and on the Jetson (heater) over LAN or Tailscale.
+and on the edge device over LAN or Tailscale.
 
 Usage:
     python dashboard/serve.py --root . --port 8000
-    # local:  http://localhost:8000
-    # jetson: http://heater:8000
+    # local:       http://localhost:8000
+    # edge device: http://edge-device:8000
 """
 
 import argparse
@@ -45,10 +45,10 @@ PIPELINE = [
     },
     {
         "id": "train",
-        "title": "Train custom model on Jetson",
-        "desc": "QLoRA fine-tune Qwen2.5-Coder-1.5B on the 8 GB Jetson Orin Nano with tegrastats logging.",
+        "title": "Train custom model on edge device",
+        "desc": "QLoRA fine-tune Qwen2.5-Coder-1.5B on the 8 GB edge device with tegrastats logging.",
         "cmds": [
-            "bash scripts/setup_jetson.sh",
+            "bash scripts/setup_edge.sh",
             "bash scripts/tegrastats_log.sh runs/orzo.tegrastats.log &",
             "python train/train_qlora.py --data data/train.jsonl --valid data/valid.jsonl --output checkpoints/orzo-qwen25-coder-1.5b --wandb",
         ],
@@ -56,7 +56,7 @@ PIPELINE = [
     {
         "id": "export",
         "title": "Export to GGUF + Ollama",
-        "desc": "Merge LoRA adapters, convert to Q4_K_M GGUF, and register the model with Ollama on heater.",
+        "desc": "Merge LoRA adapters, convert to Q4_K_M GGUF, and register the model with Ollama on the edge device.",
         "cmds": [
             "bash export/export_gguf.sh checkpoints/orzo-qwen25-coder-1.5b Qwen/Qwen2.5-Coder-1.5B-Instruct",
             "ollama run orzo",

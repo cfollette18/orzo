@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""QLoRA SFT for orzo on the Jetson Orin Nano (8 GB unified memory).
+"""QLoRA SFT for orzo on the edge device (8 GB unified memory).
 
-Defaults are chosen for `heater`: 4-bit NF4 base, LoRA r=16, seq len 2048,
+Defaults are chosen for the edge device: 4-bit NF4 base, LoRA r=16, seq len 2048,
 per-device batch 1 with grad accumulation, paged 8-bit Adam, bf16 compute,
 gradient checkpointing. Expect ~15 W board power draw; log tegrastats
 alongside every run (scripts/tegrastats_log.sh).
@@ -57,7 +57,7 @@ def main() -> None:
         quantization_config=quant,
         torch_dtype=torch.bfloat16,
         device_map="auto",
-        attn_implementation="eager",  # flash-attn is not available on Jetson
+        attn_implementation="eager",  # flash-attn is not available on edge device
     )
     model.config.use_cache = False
 

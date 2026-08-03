@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Export an orzo checkpoint to GGUF and register it with Ollama.
-# Runs on heater (the Jetson). Usage:
+# Runs on the edge device (the edge device). Usage:
 #   bash export/export_gguf.sh checkpoints/orzo-qwen25-coder-1.5b Qwen/Qwen2.5-Coder-1.5B-Instruct
 set -euo pipefail
 

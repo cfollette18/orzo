@@ -1,10 +1,10 @@
-# Training deps for the Jetson (heater). Install into a venv with --system-site-packages
+# Training deps for the edge device . Install into a venv with --system-site-packages
 # if you want to reuse JetPack's CUDA stack.
 #
 # PyTorch first — on JetPack 6 (CUDA 12.6, SBSA-compatible) the standard
 # aarch64 CUDA wheels work:
 #   pip install torch --index-url https://download.pytorch.org/whl/cu126
-# If that ever breaks, fall back to NVIDIA's Jetson wheels or jetson-containers.
+# If that ever breaks, fall back to NVIDIA's ARM CUDA wheels or community containers.
 
 transformers>=4.44
 trl>=0.10
