@@ -2,6 +2,12 @@
 
 An agent-harness generator fine-tuned entirely on an NVIDIA Jetson Orin Nano (8 GB).
 
+[![Built with jig](https://img.shields.io/badge/built%20with-jig-58a6ff)](https://github.com/cfollette18/jig)
+
+The generic training, dataset, eval, and observability tooling that built orzo
+lives in its own repository: **[jig](https://github.com/cfollette18/jig)**.
+This repo is the model, dataset, and results.
+
 Give `orzo` a natural-language spec — *"an agent that watches a GitHub repo and opens an issue when CI goes red"* — and it generates a **working agent harness**: tool schemas, the tool-use loop, dispatch, retries, and the system prompt. Not a chatbot. A machine that builds the scaffolding agents run on.
 
 > Status: **early development**. See the [roadmap](#roadmap) — nothing below claims results that don't exist yet.
