@@ -38,7 +38,31 @@ natural-language agent specs
 - `train/` — QLoRA training script tuned for the Orin Nano's 8 GB
 - `eval/` — functional eval harness (does the generated harness *run*?)
 - `export/` — LoRA merge → GGUF → Ollama
+- `dashboard/` — live pipeline dashboard (dataset progress, loss curve, tegrastats)
 - `scripts/` — Jetson setup (power mode, swap, deps)
+
+## Live observability
+
+The whole pipeline is watchable in real time:
+
+- `dashboard/serve.py` — dependency-free status page covering dataset
+  generation (per-task progress vs. targets), training loss curve (from
+  `trainer_state.json`), tegrastats power/thermals, and disk:
+
+  ```bash
+  python dashboard/serve.py --root . --port 8000
+  # laptop: http://localhost:8000 — jetson: http://heater:8000
+  ```
+
+- Training can also log to **Weights & Biases** for a full shareable
+  dashboard (loss curves, system metrics, public project page):
+
+  ```bash
+  wandb login
+  python train/train_qlora.py --data ... --output ... --wandb
+  ```
+
+- `scripts/tegrastats_log.sh` records power/thermal draw alongside every run.
 
 ## The curriculum: anatomy of an agent harness
 

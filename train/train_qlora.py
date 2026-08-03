@@ -38,6 +38,9 @@ def main() -> None:
     ap.add_argument("--lora-r", type=int, default=16)
     ap.add_argument("--lora-alpha", type=int, default=32)
     ap.add_argument("--no-4bit", action="store_true", help="bf16 LoRA fallback (no bitsandbytes)")
+    ap.add_argument("--wandb", action="store_true",
+                    help="log to Weights & Biases (run `wandb login` first; "
+                         "public project = shareable live dashboard)")
     args = ap.parse_args()
 
     quant = None
@@ -89,7 +92,7 @@ def main() -> None:
         save_strategy="epoch",
         save_total_limit=1,  # the NVMe is small; keep one checkpoint
         eval_strategy="epoch" if eval_dataset else "no",
-        report_to=[],
+        report_to=["wandb"] if args.wandb else [],
         seed=42,
     )
 
