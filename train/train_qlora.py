@@ -77,6 +77,13 @@ def main() -> None:
         task_type="CAUSAL_LM",
     )
 
+    # Some custom architectures (e.g. Kimi K3) do not implement gradient
+    # checkpointing. Detect support and fall back gracefully so training can
+    # still run on memory-constrained edge devices.
+    supports_gc = getattr(model, "supports_gradient_checkpointing", False)
+    if not supports_gc:
+        print("[orzo] gradient checkpointing not supported by this model; continuing without it")
+
     sft_config = SFTConfig(
         output_dir=args.output,
         num_train_epochs=args.epochs,
@@ -84,7 +91,7 @@ def main() -> None:
         max_length=args.seq_len,
         per_device_train_batch_size=args.batch,
         gradient_accumulation_steps=args.grad_accum,
-        gradient_checkpointing=True,
+        gradient_checkpointing=supports_gc,
         bf16=True,
         optim="paged_adamw_8bit" if quant else "adamw_torch_fused",
         lr_scheduler_type="cosine",
