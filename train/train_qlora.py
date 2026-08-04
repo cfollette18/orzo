@@ -16,20 +16,6 @@ Example:
 """
 
 import argparse
-import glob
-import os
-import sys
-
-# Jetson PyPI wheels (e.g. torch from pypi.jetson-ai-lab.io) ship with
-# CUDA libraries such as cuDSS in nvidia/cu12/lib. Ensure they are on the
-# dynamic linker path before importing torch so CUDA kernels load cleanly.
-_nvidia_lib = glob.glob(
-    os.path.join(sys.prefix, "lib", "python*", "site-packages", "nvidia", "cu12", "lib")
-)
-if _nvidia_lib and os.path.isdir(_nvidia_lib[0]):
-    _ld = os.environ.get("LD_LIBRARY_PATH", "")
-    if _nvidia_lib[0] not in _ld:
-        os.environ["LD_LIBRARY_PATH"] = _nvidia_lib[0] + (":" + _ld if _ld else "")
 
 import torch
 from datasets import load_dataset
