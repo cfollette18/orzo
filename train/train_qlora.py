@@ -16,6 +16,20 @@ Example:
 """
 
 import argparse
+import glob
+import os
+import sys
+
+# Jetson PyPI wheels (e.g. torch from pypi.jetson-ai-lab.io) ship with
+# CUDA libraries such as cuDSS in nvidia/cu12/lib. Ensure they are on the
+# dynamic linker path before importing torch so CUDA kernels load cleanly.
+_nvidia_lib = glob.glob(
+    os.path.join(sys.prefix, "lib", "python*", "site-packages", "nvidia", "cu12", "lib")
+)
+if _nvidia_lib and os.path.isdir(_nvidia_lib[0]):
+    _ld = os.environ.get("LD_LIBRARY_PATH", "")
+    if _nvidia_lib[0] not in _ld:
+        os.environ["LD_LIBRARY_PATH"] = _nvidia_lib[0] + (":" + _ld if _ld else "")
 
 import torch
 from datasets import load_dataset
@@ -55,7 +69,7 @@ def main() -> None:
     model = AutoModelForCausalLM.from_pretrained(
         args.model,
         quantization_config=quant,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
         device_map="auto",
         attn_implementation="eager",  # flash-attn is not available on edge device
         trust_remote_code=True,
@@ -105,9 +119,9 @@ def main() -> None:
     )
 
     # Apply LoRA manually with autocast_adapter_dtype=False so adapter weights
-    # stay in the model's native dtype (bfloat16). This avoids PEFT's default
-    # float32 cast, which fails on Jetson/Orin where the installed PyTorch wheel
-    # does not include sm_87 CUDA kernels for fp32 operations.
+    # stay in the model's native dtype (bfloat16), avoiding PEFT's default
+    # float32 cast. This keeps memory low and sidesteps fp32 CUDA kernel issues
+    # if a generic wheel without sm_87 support is ever installed.
     model = get_peft_model(model, peft_config, autocast_adapter_dtype=False)
 
     trainer = SFTTrainer(
