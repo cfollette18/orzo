@@ -19,7 +19,7 @@ import argparse
 
 import torch
 from datasets import load_dataset
-from peft import LoraConfig
+from peft import LoraConfig, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from trl import SFTConfig, SFTTrainer
 
@@ -96,12 +96,17 @@ def main() -> None:
         seed=42,
     )
 
+    # Apply LoRA manually with autocast_adapter_dtype=False so adapter weights
+    # stay in the model's native dtype (bfloat16). This avoids PEFT's default
+    # float32 cast, which fails on Jetson/Orin where the installed PyTorch wheel
+    # does not include sm_87 CUDA kernels for fp32 operations.
+    model = get_peft_model(model, peft_config, autocast_adapter_dtype=False)
+
     trainer = SFTTrainer(
         model=model,
         args=sft_config,
         train_dataset=dataset,
         eval_dataset=eval_dataset,
-        peft_config=peft_config,
         processing_class=tokenizer,
     )
     trainer.train()
