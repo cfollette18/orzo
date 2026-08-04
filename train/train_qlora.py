@@ -58,10 +58,11 @@ def main() -> None:
         torch_dtype=torch.bfloat16,
         device_map="auto",
         attn_implementation="eager",  # flash-attn is not available on edge device
+        trust_remote_code=True,
     )
     model.config.use_cache = False
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model)
+    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
 
     dataset = load_dataset("json", data_files=args.data, split="train")
     eval_dataset = None
